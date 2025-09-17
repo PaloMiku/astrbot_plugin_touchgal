@@ -437,5 +437,6 @@ class TouchGalPlugin(Star):
 
     async def terminate(self):
         """插件终止时清理资源"""
-        self.user_cache.clear()
+        self.global_game_cache.clear()
+        self.cache_expiry.clear()
         logger.info("TouchGal插件已终止，用户缓存已清空")
