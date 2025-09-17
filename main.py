@@ -37,144 +37,149 @@ class TouchGalAPI:
         self.base_url = "https://www.touchgal.us/api"
         self.search_url = f"{self.base_url}/search"
         self.download_url = f"{self.base_url}/patch/resource"
+        self.semaphore = asyncio.Semaphore(10)  # 添加信号量限制并发API请求
+        self.image_lock = asyncio.Lock()  # 添加图片处理锁
         
     async def search_game(self, keyword: str, limit: int = 15) -> List[Dict[str, Any]]:
         """搜索游戏信息"""
-        headers = {"Content-Type": "application/json"}
-        
-        # 正确构造queryString参数（字符串格式的JSON数组）
-        query_string = json.dumps([{"type": "keyword", "name": keyword}])
-        
-        payload = {
-            "queryString": query_string,  # 使用字符串格式的JSON
-            "limit": limit,
-            "searchOption": {
-                "searchInIntroduction": True,
-                "searchInAlias": True,
-                "searchInTag": True
-            },
-            "page": 1,
-            "selectedType": "all",
-            "selectedLanguage": "all",
-            "selectedPlatform": "all",
-            "sortField": "resource_update_time",
-            "sortOrder": "desc",
-            "selectedYears": ["all"],  # 添加缺失的必需字段
-            "selectedMonths": ["all"]  # 添加缺失的必需字段
-        }
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.search_url, 
-                    json=payload, 
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as response:
-                    # 确保响应状态为200
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise APIError(f"API请求失败: {response.status} - {error_text}")
-                    
-                    # 尝试解析JSON
-                    try:
-                        data = await response.json()
-                    except Exception as e:
-                        text_response = await response.text()
-                        logger.error(f"JSON解析失败: {str(e)} - 响应内容: {text_response[:200]}")
-                        raise APIError("API返回了无效的JSON数据")
-                    
-                    # 验证数据结构
-                    if not isinstance(data, dict) or "galgames" not in data:
-                        logger.warning(f"API返回了意外的数据结构: {data}")
-                        raise APIError("API返回了无效的数据结构")
-                    
-                    if not data.get("galgames"):
-                        raise NoGameFound(f"未找到游戏: {keyword}")
-                    
-                    return data["galgames"]
-        except aiohttp.ClientError as e:
-            raise APIError(f"网络请求错误: {str(e)}")
+        async with self.semaphore:
+            headers = {"Content-Type": "application/json"}
+            
+            # 正确构造queryString参数（字符串格式的JSON数组）
+            query_string = json.dumps([{"type": "keyword", "name": keyword}])
+            
+            payload = {
+                "queryString": query_string,  # 使用字符串格式的JSON
+                "limit": limit,
+                "searchOption": {
+                    "searchInIntroduction": True,
+                    "searchInAlias": True,
+                    "searchInTag": True
+                },
+                "page": 1,
+                "selectedType": "all",
+                "selectedLanguage": "all",
+                "selectedPlatform": "all",
+                "sortField": "resource_update_time",
+                "sortOrder": "desc",
+                "selectedYears": ["all"],  # 添加缺失的必需字段
+                "selectedMonths": ["all"]  # 添加缺失的必需字段
+            }
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        self.search_url, 
+                        json=payload, 
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15)
+                    ) as response:
+                        # 确保响应状态为200
+                        if response.status != 200:
+                            error_text = await response.text()
+                            raise APIError(f"API请求失败: {response.status} - {error_text}")
+                        
+                        # 尝试解析JSON
+                        try:
+                            data = await response.json()
+                        except Exception as e:
+                            text_response = await response.text()
+                            logger.error(f"JSON解析失败: {str(e)} - 响应内容: {text_response[:200]}")
+                            raise APIError("API返回了无效的JSON数据")
+                        
+                        # 验证数据结构
+                        if not isinstance(data, dict) or "galgames" not in data:
+                            logger.warning(f"API返回了意外的数据结构: {data}")
+                            raise APIError("API返回了无效的数据结构")
+                        
+                        if not data.get("galgames"):
+                            raise NoGameFound(f"未找到游戏: {keyword}")
+                        
+                        return data["galgames"]
+            except aiohttp.ClientError as e:
+                raise APIError(f"网络请求错误: {str(e)}")
 
     async def get_downloads(self, patch_id: Union[int, str]) -> List[Dict[str, Any]]:
         """获取游戏下载资源"""
-        params = {"patchId": patch_id}
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    self.download_url, 
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise APIError(f"API请求失败: {response.status} - {error_text}")
-                    
-                    # 尝试解析JSON
-                    try:
-                        data = await response.json()
-                    except Exception as e:
-                        text_response = await response.text()
-                        logger.error(f"JSON解析失败: {str(e)} - 响应内容: {text_response[:200]}")
-                        raise APIError("API返回了无效的JSON数据")
-                    
-                    # 验证数据结构
-                    if not isinstance(data, list):
-                        logger.warning(f"API返回了意外的数据结构: {data}")
-                        raise APIError("API返回了无效的数据结构")
-                    
-                    if not data:
-                        raise DownloadNotFound(f"未找到ID为{patch_id}的下载资源")
-                    
-                    return data
-        except aiohttp.ClientError as e:
-            raise APIError(f"网络请求错误: {str(e)}")
+        async with self.semaphore:
+            params = {"patchId": patch_id}
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        self.download_url, 
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            raise APIError(f"API请求失败: {response.status} - {error_text}")
+                        
+                        # 尝试解析JSON
+                        try:
+                            data = await response.json()
+                        except Exception as e:
+                            text_response = await response.text()
+                            logger.error(f"JSON解析失败: {str(e)} - 响应内容: {text_response[:200]}")
+                            raise APIError("API返回了无效的JSON数据")
+                        
+                        # 验证数据结构
+                        if not isinstance(data, list):
+                            logger.warning(f"API返回了意外的数据结构: {data}")
+                            raise APIError("API返回了无效的数据结构")
+                        
+                        if not data:
+                            raise DownloadNotFound(f"未找到ID为{patch_id}的下载资源")
+                        
+                        return data
+            except aiohttp.ClientError as e:
+                raise APIError(f"网络请求错误: {str(e)}")
     
     async def download_and_convert_image(self, url: str) -> Union[str, None]:
         """
         下载并转换图片为JPG格式
         支持AVIF格式转换（如果安装了pillow-avif-plugin）
         """
-        if not url:
-            return None
+        async with self.image_lock:
+            if not url:
+                return None
+                
+            # 生成唯一的文件名（使用URL的MD5避免重复下载）
+            url_hash = hashlib.md5(url.encode()).hexdigest()
+            filepath = os.path.join(TEMP_DIR, f"main_{url_hash}")
+            output_path = os.path.join(TEMP_DIR, f"converted_{url_hash}.jpg")
             
-        # 生成唯一的文件名（使用URL的MD5避免重复下载）
-        url_hash = hashlib.md5(url.encode()).hexdigest()
-        filepath = os.path.join(TEMP_DIR, f"main_{url_hash}")
-        output_path = os.path.join(TEMP_DIR, f"converted_{url_hash}.jpg")
-        
-        # 如果已经转换过，直接返回
-        if os.path.exists(output_path):
-            return output_path
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        logger.warning(f"获取图片失败: {response.status} - {url}")
-                        return None
-                    
-                    # 检查图片类型
-                    content_type = response.headers.get('Content-Type', '').split(';')[0].strip().lower()
-                    
-                    # 写入原始图片
-                    async with aiofiles.open(filepath, "wb") as f:
-                        await f.write(await response.read())
-                    
-                    # 处理图片转换
-                    return await self._convert_image(filepath, output_path)
-                    
-        except Exception as e:
-            logger.warning(f"图片处理失败: {str(e)} - {url}")
-            return None
-        finally:
-            # 清理原始文件
-            if os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                except Exception as e:
-                    logger.warning(f"删除原始图片失败: {str(e)}")
+            # 如果已经转换过，直接返回
+            if os.path.exists(output_path):
+                return output_path
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status != 200:
+                            logger.warning(f"获取图片失败: {response.status} - {url}")
+                            return None
+                        
+                        # 检查图片类型
+                        content_type = response.headers.get('Content-Type', '').split(';')[0].strip().lower()
+                        
+                        # 写入原始图片
+                        async with aiofiles.open(filepath, "wb") as f:
+                            await f.write(await response.read())
+                        
+                        # 处理图片转换
+                        return await self._convert_image(filepath, output_path)
+                        
+            except Exception as e:
+                logger.warning(f"图片处理失败: {str(e)} - {url}")
+                return None
+            finally:
+                # 清理原始文件
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception as e:
+                        logger.warning(f"删除原始图片失败: {str(e)}")
     
     async def _convert_image(self, input_path: str, output_path: str) -> str:
         """转换图片为JPG格式"""
@@ -220,10 +225,11 @@ class TouchGalPlugin(Star):
         super().__init__(context)
         self.config = config
         self.search_limit = self.config.get("search_limit", 15)
-        self.user_cache = {}  # 用户缓存: {user_id: {game_id: game_info}}
+        self.global_game_cache = {}  # {game_id: game_info}
+        self.cache_expiry = {}       # {game_id: timestamp}
+        self.max_cache_size = 1000   # 最大缓存游戏数
+        self.cache_lock = asyncio.Lock()  # 添加缓存锁
         self.api = TouchGalAPI()
-        
-        # 清理旧缓存
         self.cleanup_old_cache()
 
     def cleanup_old_cache(self):
@@ -294,21 +300,29 @@ class TouchGalPlugin(Star):
 
         keyword = cmd[1]
         user_id = event.get_sender_id()
-        
+              
         try:
             yield event.plain_result(f"🔍 正在搜索: {keyword}")
-            results = await self.api.search_game(keyword, self.search_limit)
-            
-            # 缓存游戏信息
-            self.user_cache[user_id] = {game["id"]: game for game in results}
+            results = await self.api.search_game(keyword, self.search_limit)            
             
             # 并发下载所有封面图片
             cover_tasks = []
-            for game in results:
-                if game.get("banner"):
-                    cover_tasks.append(self.api.download_and_convert_image(game["banner"]))
-                else:
-                    cover_tasks.append(None)  # 如果没有封面，添加None占位
+            async with self.cache_lock:
+                for game in results:
+                    # 缓存游戏信息
+                    game_id = game['id']
+                    if len(self.global_game_cache) >= self.max_cache_size:
+                        # 找到最旧的缓存项
+                        oldest_id = min(self.cache_expiry, key=self.cache_expiry.get)
+                        del self.global_game_cache[oldest_id]
+                        del self.cache_expiry[oldest_id]
+                    self.global_game_cache[game_id] = game
+                    self.cache_expiry[game_id] = time.time()
+                    
+                    if game.get("banner"):
+                        cover_tasks.append(self.api.download_and_convert_image(game["banner"]))
+                    else:
+                        cover_tasks.append(None)  # 如果没有封面，添加None占位
             
             # 等待所有图片下载完成
             cover_paths = await asyncio.gather(*cover_tasks)
@@ -375,20 +389,9 @@ class TouchGalPlugin(Star):
             game_id = int(game_id)
             
             # 尝试从缓存获取游戏信息
-            game_info = None
-            if user_id in self.user_cache and game_id in self.user_cache[user_id]:
-                game_info = self.user_cache[user_id][game_id]
-            
-            # 没有缓存则尝试直接获取
-            if not game_info:
-                # 先尝试从缓存中获取游戏名称
-                game_name = "该游戏"
-                for games in self.user_cache.values():
-                    if game_id in games:
-                        game_info = games[game_id]
-                        game_name = game_info.get("name", "该游戏")
-                        break
-            
+            async with self.cache_lock:
+                game_info = self.global_game_cache.get(game_id)
+                        
             # 获取游戏封面图片
             cover_image_path = None
             if game_info and game_info.get("banner"):
