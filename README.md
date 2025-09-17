@@ -32,3 +32,5 @@
 [帮助文档](https://astrbot.app)
 
 [TouchGal](https://www.touchgal.us/)
+
+[astrbot_plugin_galinfo](https://github.com/Hxfrzc/astrbot_plugin_galinfo)
