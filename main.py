@@ -262,6 +262,87 @@ class TouchGalAPI:
             if 'img' in locals() and img is not None:
                 img.close()
 
+# 高效缓存管理类
+class AsyncGameCache:
+    """异步游戏缓存管理器，避免锁操作"""
+    def __init__(self, max_size: int = 1000, ttl: int = 86400):
+        self._cache: Dict[int, Dict] = {}
+        self._expiry_times: Dict[int, float] = {}
+        self._access_times: Dict[int, float] = {}
+        self._max_size = max_size
+        self._ttl = ttl
+        self._cache_order = []
+        
+    async def add(self, game_id: int, game_info: Dict):
+        """添加游戏到缓存"""
+        current_time = time.time()
+        
+        # 如果缓存已满，移除最旧的项目
+        if len(self._cache) >= self._max_size and self._cache_order:
+            oldest_id = self._cache_order.pop(0)
+            if oldest_id in self._cache:
+                del self._cache[oldest_id]
+            if oldest_id in self._expiry_times:
+                del self._expiry_times[oldest_id]
+            if oldest_id in self._access_times:
+                del self._access_times[oldest_id]
+        
+        # 添加新项目
+        self._cache[game_id] = game_info
+        self._expiry_times[game_id] = current_time + self._ttl
+        self._access_times[game_id] = current_time
+        self._cache_order.append(game_id)
+        
+        # 确保缓存顺序列表不会过大
+        if len(self._cache_order) > self._max_size * 2:
+            self._cache_order = [id for id in self._cache_order if id in self._cache]
+    
+    async def get(self, game_id: int) -> Optional[Dict]:
+        """从缓存获取游戏信息"""
+        current_time = time.time()
+        
+        # 检查缓存是否过期
+        if game_id in self._expiry_times and current_time > self._expiry_times[game_id]:
+            # 如果过期，移除缓存项
+            if game_id in self._cache:
+                del self._cache[game_id]
+            if game_id in self._expiry_times:
+                del self._expiry_times[game_id]
+            if game_id in self._access_times:
+                del self._access_times[game_id]
+            return None
+        
+        # 更新访问时间
+        if game_id in self._cache:
+            self._access_times[game_id] = current_time
+            # 更新缓存顺序
+            if game_id in self._cache_order:
+                self._cache_order.remove(game_id)
+            self._cache_order.append(game_id)
+            return self._cache[game_id]
+        
+        return None
+    
+    async def cleanup(self):
+        """清理过期缓存"""
+        current_time = time.time()
+        expired_ids = []
+        
+        for game_id, expiry_time in self._expiry_times.items():
+            if current_time > expiry_time:
+                expired_ids.append(game_id)
+        
+        for game_id in expired_ids:
+            if game_id in self._cache:
+                del self._cache[game_id]
+            if game_id in self._expiry_times:
+                del self._expiry_times[game_id]
+            if game_id in self._access_times:
+                del self._access_times[game_id]
+        
+        # 清理缓存顺序列表
+        self._cache_order = [id for id in self._cache_order if id in self._cache]
+
 @register(
     "astrbot_plugin_touchgal",
     "CCYellowStar2",
@@ -274,11 +355,9 @@ class TouchGalPlugin(Star):
         super().__init__(context)
         self.config = config
         self.search_limit = self.config.get("search_limit", 15)
-        self.global_game_cache: Dict[int, Dict] = {}  # {game_id: game_info}
-        self.cache_expiry_heap: List[Tuple[float, int]] = []  # (expiry_time, game_id)
-        self.cache_expiry_map: Dict[int, float] = {}  # {game_id: expiry_time}
-        self.max_cache_size = 1000   # 最大缓存游戏数
-        self.cache_lock = asyncio.Lock()  # 添加缓存锁
+        # 使用无锁的异步缓存管理
+        self.game_cache = AsyncGameCache(max_size=1000, ttl=86400)
+
         self.api = TouchGalAPI()
         self.temp_dir = StarTools.get_data_dir("astrbot_plugin_touchgal") / "tmp"
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -292,11 +371,21 @@ class TouchGalPlugin(Star):
         # 启动时清理旧缓存
         asyncio.create_task(self.cleanup_old_cache())
 
+        # 定期清理缓存
+        asyncio.create_task(self.periodic_cache_cleanup())
+
     async def start_daily_cleanup(self):
         """启动每日清理任务"""
         # 安排在每天00:00执行清理
         await self.scheduler.schedule_daily(0, 0, self.cleanup_old_cache)
         logger.info("已启动每日00:00自动清理图片缓存任务")
+
+    async def periodic_cache_cleanup(self):
+        """定期清理缓存（每10分钟一次）"""
+        while True:
+            await asyncio.sleep(600)  # 10分钟
+            await self.game_cache.cleanup()
+            logger.debug("缓存清理完成")
 
     async def cleanup_old_cache(self):
         """完全异步的缓存清理方法"""
@@ -363,37 +452,6 @@ class TouchGalPlugin(Star):
                     logger.info(f"清理旧缓存: {os.path.basename(file_path)}")
             except Exception as e:
                 logger.warning(f"处理文件失败: {file_path} - {str(e)}")
-
-    async def _add_to_cache(self, game_id: int, game_info: Dict):
-        """原子操作：添加游戏到缓存（使用堆优化）"""
-        expiry_time = time.time() + 86400  # 24小时缓存
-        
-        # 检查缓存是否已满
-        if len(self.global_game_cache) >= self.max_cache_size and self.cache_expiry_heap:
-            # 原子操作：从堆中移除最旧的缓存项
-            _, old_id = heapq.heappop(self.cache_expiry_heap)
-            if old_id in self.cache_expiry_map:
-                del self.cache_expiry_map[old_id]
-            if old_id in self.global_game_cache:
-                del self.global_game_cache[old_id]
-        
-        # 原子操作：添加新缓存项
-        self.global_game_cache[game_id] = game_info
-        self.cache_expiry_map[game_id] = expiry_time
-        heapq.heappush(self.cache_expiry_heap, (expiry_time, game_id))
-
-    async def _get_from_cache(self, game_id: int) -> Optional[Dict]:
-        """原子操作：从缓存获取游戏信息"""
-        # 检查缓存是否过期
-        expiry = self.cache_expiry_map.get(game_id)
-        if expiry and time.time() > expiry:
-            # 原子操作：移除过期缓存
-            if game_id in self.global_game_cache:
-                del self.global_game_cache[game_id]
-            if game_id in self.cache_expiry_map:
-                del self.cache_expiry_map[game_id]
-            return None
-        return self.global_game_cache.get(game_id)
     
     def _format_game_info(self, game_info: Dict[str, Any]) -> str:
         """格式化游戏信息"""
@@ -457,17 +515,16 @@ class TouchGalPlugin(Star):
             
             # 并发下载所有封面图片
             cover_tasks = []
-            async with self.cache_lock:
-                for game in results:
-                    # 缓存游戏信息
-                    game_id = game['id']
-                    # 使用优化后的方法添加到缓存
-                    await self._add_to_cache(game_id, game)
-                    
-                    if game.get("banner"):
-                        cover_tasks.append(self.api.download_and_convert_image(game["banner"]))
-                    else:
-                        cover_tasks.append(None)  # 如果没有封面，添加None占位
+            for game in results:
+                # 缓存游戏信息
+                game_id = game['id']
+                # 使用优化后的方法添加到缓存
+                await self.game_cache.add(game_id, game)
+                
+                if game.get("banner"):
+                    cover_tasks.append(self.api.download_and_convert_image(game["banner"]))
+                else:
+                    cover_tasks.append(None)  # 如果没有封面，添加None占位
             
             # 等待所有图片下载完成
             cover_paths = await asyncio.gather(*cover_tasks)
@@ -534,8 +591,7 @@ class TouchGalPlugin(Star):
             game_id = int(game_id)
             
             # 尝试从缓存获取游戏信息
-            async with self.cache_lock:
-                game_info = await self._get_from_cache(game_id)
+            game_info = await self.game_cache.get(game_id)
                         
             # 获取游戏封面图片
             cover_image_path = None
@@ -583,9 +639,6 @@ class TouchGalPlugin(Star):
     async def terminate(self):
         """插件终止时清理资源"""
         await self.scheduler.cancel_all()
-        async with self.cache_lock:
-            self.global_game_cache.clear()
-            self.cache_expiry_heap.clear()
-            self.cache_expiry_map.clear()
+
         await self.cleanup_old_cache()
         logger.info("TouchGal插件已终止，用户缓存已清空")
