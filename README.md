@@ -1,4 +1,4 @@
-# Astrbot Galgame_Info搜索插件
+# astrbot_plugin_touchga搜索插件
 
 ## ✨ 简介
 一个[Astrbot](https://github.com/Soulter/AstrBot)插件，可以提供Galgame的搜索和下载（接入touchgal的api）
