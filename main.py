@@ -301,37 +301,68 @@ class TouchGalPlugin(Star):
     async def cleanup_old_cache(self):
         """完全异步的缓存清理方法"""
         try:
-            # 使用异步方式遍历目录
-            async for file_path in self._async_walk_directory(self.temp_dir):
-                # 检查文件是否符合清理条件
+            # 使用高效异步遍历方式
+            file_paths = []
+            async for file_path in self._efficient_async_walk(self.temp_dir):
                 if self._should_clean_file(file_path):
-                    try:
-                        # 获取文件修改时间
-                        stat = await asyncio.to_thread(os.stat, file_path)
-                        file_mtime = stat.st_mtime
-                        current_time = time.time()
-                        
-                        # 清理超过一天的文件
-                        if current_time - file_mtime > 86400:
-                            await asyncio.to_thread(os.remove, file_path)
-                            logger.info(f"清理旧缓存: {os.path.basename(file_path)}")
-                    except Exception as e:
-                        logger.warning(f"删除旧缓存失败: {file_path} - {str(e)}")
+                    file_paths.append(file_path)
+            
+            # 批量处理文件
+            batch_size = 100
+            for i in range(0, len(file_paths), batch_size):
+                batch = file_paths[i:i+batch_size]
+                await self._process_file_batch(batch)
+                await asyncio.sleep(0.1)  # 短暂暂停
+                
         except Exception as e:
             logger.error(f"清理缓存失败: {str(e)}")
 
-    async def _async_walk_directory(self, directory: str):
-        """异步遍历目录"""
-        for root, _, files in os.walk(directory):
+    async def _efficient_async_walk(self, directory: str):
+        """高效异步目录遍历"""
+        # 使用aiofiles进行异步文件遍历
+        async for root, _, files in self._async_os_walk(directory):
             for file in files:
                 yield os.path.join(root, file)
-            # 添加短暂暂停以避免阻塞
-            await asyncio.sleep(0.01)
+    
+    async def _async_os_walk(self, directory: str):
+        """异步执行os.walk"""
+        loop = asyncio.get_running_loop()
+        walk_generator = await loop.run_in_executor(None, os.walk, directory)
+        
+        # 每次迭代少量结果
+        batch = []
+        for root, dirs, files in walk_generator:
+            batch.append((root, dirs, files))
+            if len(batch) >= 10:  # 每10个目录处理一次
+                for item in batch:
+                    yield item
+                batch = []
+                await asyncio.sleep(0.01)  # 短暂暂停
+        
+        # 处理剩余项
+        for item in batch:
+            yield item
 
     def _should_clean_file(self, file_path: str) -> bool:
         """检查文件是否符合清理条件"""
         filename = os.path.basename(file_path)
         return filename.startswith("converted_") or filename.startswith("main_")
+
+    async def _process_file_batch(self, file_paths: List[str]):
+        """批量处理文件"""
+        for file_path in file_paths:
+            try:
+                # 获取文件修改时间
+                stat = await asyncio.to_thread(os.stat, file_path)
+                file_mtime = stat.st_mtime
+                current_time = time.time()
+                
+                # 清理超过一天的文件
+                if current_time - file_mtime > 86400:
+                    await asyncio.to_thread(os.remove, file_path)
+                    logger.info(f"清理旧缓存: {os.path.basename(file_path)}")
+            except Exception as e:
+                logger.warning(f"处理文件失败: {file_path} - {str(e)}")
 
     async def _add_to_cache(self, game_id: int, game_info: Dict):
         """原子操作：添加游戏到缓存（使用堆优化）"""
