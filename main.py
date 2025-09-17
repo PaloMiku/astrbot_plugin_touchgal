@@ -339,6 +339,8 @@ class AsyncGameCache:
                 del self._expiry_times[game_id]
             if game_id in self._access_times:
                 del self._access_times[game_id]
+            if game_id in self._cache_order:
+                self._cache_order.remove(game_id)
         
         # 清理缓存顺序列表
         self._cache_order = [id for id in self._cache_order if id in self._cache]
@@ -531,7 +533,7 @@ class TouchGalPlugin(Star):
                     cover_tasks.append(None)  # 如果没有封面，添加None占位
             
             # 等待所有图片下载完成
-            cover_paths = await asyncio.gather(*cover_tasks)
+            cover_paths = await asyncio.gather(*cover_tasks, return_exceptions=True)
             
             # 构建消息链
             chain = []
