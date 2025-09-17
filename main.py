@@ -4,6 +4,7 @@ import json
 import os
 import asyncio
 import time
+from datetime import datetime, timedelta
 import hashlib
 from typing import Dict, List, Union, Any
 from PIL import Image, UnidentifiedImageError
@@ -30,6 +31,46 @@ logger.info("AVIF格式支持已启用")
 # 创建临时缓存文件夹
 TEMP_DIR = os.path.join(os.path.dirname(__file__), "tmp")
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# 创建定时任务管理器
+class Scheduler:
+    def __init__(self):
+        self.tasks = []
+    
+    async def schedule_daily(self, hour, minute, callback):
+        """安排每天特定时间执行的任务"""
+        async def task_loop():
+            while True:
+                now = datetime.now()
+                # 计算下一个执行时间
+                next_run = datetime(
+                    now.year, now.month, now.day,
+                    hour, minute
+                )
+                if next_run < now:
+                    next_run += timedelta(days=1)
+                
+                # 计算等待时间（秒）
+                wait_seconds = (next_run - now).total_seconds()
+                await asyncio.sleep(wait_seconds)
+                
+                # 执行任务
+                try:
+                    await callback()
+                except Exception as e:
+                    logger.error(f"定时任务执行失败: {str(e)}")
+        
+        # 启动任务
+        self.tasks.append(asyncio.create_task(task_loop()))
+    
+    async def cancel_all(self):
+        """取消所有定时任务"""
+        for task in self.tasks:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 """TouchGal API接口封装"""
 class TouchGalAPI:
@@ -230,7 +271,18 @@ class TouchGalPlugin(Star):
         self.max_cache_size = 1000   # 最大缓存游戏数
         self.cache_lock = asyncio.Lock()  # 添加缓存锁
         self.api = TouchGalAPI()
-        self.cleanup_old_cache()
+        
+        # 初始化定时任务
+        self.scheduler = Scheduler()
+        
+        # 启动清理任务
+        asyncio.create_task(self.start_daily_cleanup())
+
+    async def start_daily_cleanup(self):
+        """启动每日清理任务"""
+        # 安排在每天00:00执行清理
+        await self.scheduler.schedule_daily(0, 0, self.cleanup_old_cache)
+        logger.info("已启动每日00:00自动清理图片缓存任务")
 
     def cleanup_old_cache(self):
         """清理旧的缓存图片"""
@@ -437,6 +489,8 @@ class TouchGalPlugin(Star):
 
     async def terminate(self):
         """插件终止时清理资源"""
+        await self.scheduler.cancel_all()
         self.global_game_cache.clear()
         self.cache_expiry.clear()
+        self.cleanup_old_cache()
         logger.info("TouchGal插件已终止，用户缓存已清空")
