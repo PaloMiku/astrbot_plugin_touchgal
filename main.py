@@ -295,9 +295,6 @@ class TouchGalPlugin(Star):
         keyword = cmd[1]
         user_id = event.get_sender_id()
         
-        # 清空用户缓存
-        self.user_cache.pop(user_id, None)
-        
         try:
             yield event.plain_result(f"🔍 正在搜索: {keyword}")
             results = await self.api.search_game(keyword, self.search_limit)
