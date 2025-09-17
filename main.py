@@ -371,8 +371,8 @@ class TouchGalPlugin(Star):
         # 启动时清理旧缓存
         asyncio.create_task(self.cleanup_old_cache())
 
-        # 定期清理缓存
-        asyncio.create_task(self.periodic_cache_cleanup())
+        # 启动定期缓存清理并保存任务引用
+        self.periodic_task = asyncio.create_task(self.periodic_cache_cleanup())
 
     async def start_daily_cleanup(self):
         """启动每日清理任务"""
@@ -382,10 +382,14 @@ class TouchGalPlugin(Star):
 
     async def periodic_cache_cleanup(self):
         """定期清理缓存（每10分钟一次）"""
-        while True:
-            await asyncio.sleep(600)  # 10分钟
-            await self.game_cache.cleanup()
-            logger.debug("缓存清理完成")
+        try:
+            while True:
+                await self.game_cache.cleanup()
+                logger.debug("缓存清理完成")
+                await asyncio.sleep(600)  # 10分钟
+        except asyncio.CancelledError:
+            logger.info("定期缓存清理任务已被取消")
+            raise
 
     async def cleanup_old_cache(self):
         """完全异步的缓存清理方法"""
@@ -639,6 +643,12 @@ class TouchGalPlugin(Star):
     async def terminate(self):
         """插件终止时清理资源"""
         await self.scheduler.cancel_all()
-
+        # 取消定期缓存清理任务
+        if hasattr(self, 'periodic_task') and not self.periodic_task.done():
+            self.periodic_task.cancel()
+            try:
+                await self.periodic_task
+            except asyncio.CancelledError:
+                pass
         await self.cleanup_old_cache()
         logger.info("TouchGal插件已终止，用户缓存已清空")
