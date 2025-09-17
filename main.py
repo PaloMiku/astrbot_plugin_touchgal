@@ -291,6 +291,9 @@ class AsyncGameCache:
         self._cache[game_id] = game_info
         self._expiry_times[game_id] = current_time + self._ttl
         self._access_times[game_id] = current_time
+        # 确保ID在缓存顺序列表中（如果已存在则先移除）
+        if game_id in self._cache_order:
+            self._cache_order.remove(game_id)
         self._cache_order.append(game_id)
         
         # 确保缓存顺序列表不会过大
@@ -310,12 +313,15 @@ class AsyncGameCache:
                 del self._expiry_times[game_id]
             if game_id in self._access_times:
                 del self._access_times[game_id]
+            # 同时从缓存顺序列表中移除
+            if game_id in self._cache_order:
+                self._cache_order.remove(game_id)
             return None
         
         # 更新访问时间
         if game_id in self._cache:
             self._access_times[game_id] = current_time
-            # 更新缓存顺序
+            # 更新缓存顺序：移动到列表末尾表示最近访问
             if game_id in self._cache_order:
                 self._cache_order.remove(game_id)
             self._cache_order.append(game_id)
