@@ -210,7 +210,7 @@ class TouchGalAPI:
 
 @register(
     "astrbot_plugin_touchgal",
-    "CCYellowStar",
+    "CCYellowStar2",
     "基于TouchGal API的Galgame信息查询与下载插件",
     "1.0",
     "https://github.com/CCYellowStar2/astrbot_plugin_touchgal"
