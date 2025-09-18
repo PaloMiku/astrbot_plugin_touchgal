@@ -516,6 +516,8 @@ class TouchGalPlugin(Star):
                 f"{i}. {platform}版: {resource['name']}",
                 f"   📦 大小: {resource['size']}",
                 f"   🔗 下载地址: {resource['content']}",
+                f"      提取码: {resource['code'] or '无'}",
+                f"      解压码: {resource['password'] or '无'}",
                 f"      语言: {', '.join(resource['language'])}",
                 f"   📝 备注: {resource['note'] or '无'}"
             ]
