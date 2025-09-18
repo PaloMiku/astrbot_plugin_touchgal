@@ -454,8 +454,6 @@ class TouchGalPlugin(Star):
         except Exception as e:
             logger.error(f"异步清理缓存失败: {e}")
         
-        # 异步清理空目录
-        await self._async_remove_empty_dirs(cache_dir)
         
         logger.info(f"缓存清理完成，共删除 {deleted_count} 个过期文件")
         return deleted_count
@@ -480,54 +478,6 @@ class TouchGalPlugin(Star):
                     yield full_path
         except Exception as e:
             logger.warning(f"遍历目录失败: {directory}, 原因: {e}")
-
-    async def _async_remove_empty_dirs(self, cache_dir: str):
-        """异步递归删除空目录"""
-        try:
-            # 使用堆栈实现非递归遍历
-            dirs_to_check = [cache_dir]
-            empty_dirs = []
-            
-            while dirs_to_check:
-                current_dir = dirs_to_check.pop()
-                
-                try:
-                    # 获取目录内容
-                    entries = await aiofiles.os.listdir(current_dir)
-                    has_content = False
-                    
-                    for entry in entries:
-                        full_path = os.path.join(current_dir, entry)
-                        
-                        # 检查文件状态
-                        stat = await aiofiles.os.stat(full_path)
-                        
-                        if stat.st_mode & 0o40000:  # 目录
-                            # 添加到待检查列表
-                            dirs_to_check.append(full_path)
-                            has_content = True
-                        else:  # 文件
-                            has_content = True
-                    
-                    # 如果没有内容，标记为空目录
-                    if not has_content:
-                        empty_dirs.append(current_dir)
-                
-                except FileNotFoundError:
-                    # 目录可能已被删除
-                    pass
-            
-            # 自底向上删除空目录
-            for dir_path in reversed(empty_dirs):
-                try:
-                    await aiofiles.os.rmdir(dir_path)
-                    logger.debug(f"已删除空目录: {dir_path}")
-                except OSError as e:
-                    # 目录可能已被其他进程删除或非空
-                    logger.debug(f"无法删除目录: {dir_path}, 原因: {e}")
-        
-        except Exception as e:
-            logger.error(f"异步清理空目录失败: {e}")
     
     def _format_game_info(self, game_info: Dict[str, Any]) -> str:
         """格式化游戏信息（未使用）"""
