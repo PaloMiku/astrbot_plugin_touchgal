@@ -572,8 +572,8 @@ class TouchGalPlugin(Star):
                 ]
                 chain.append(Plain("\n".join(game_info)))
                 # 添加封面图片（如果有）
-                if i-1 < len(cover_paths) and cover_paths[i-1] and await async_exists(cover_paths[i-1]):
-                    chain.append(CompImage.fromFileSystem(cover_paths[i-1]))
+                if cover_path and not isinstance(cover_path, Exception) and await async_exists(cover_path):
+                    chain.append(CompImage.fromFileSystem(cover_path))
                 
             
             # 添加提示文本
