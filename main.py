@@ -1,12 +1,12 @@
 import aiohttp
 import aiofiles
+import aiofiles.os
 import json
 import os
 import asyncio
 import time
 from datetime import datetime, timedelta
 import hashlib
-import heapq
 from typing import Dict, List, Union, Any, Tuple, Optional
 from PIL import Image, UnidentifiedImageError
 import astrbot.api.message_components as Comp
@@ -184,8 +184,8 @@ class TouchGalAPI:
                 
             # 生成唯一的文件名（使用URL的MD5避免重复下载）
             url_hash = hashlib.md5(url.encode()).hexdigest()
-            filepath = os.path.join(self.temp_dir, f"main_{url_hash}")
-            output_path = os.path.join(self.temp_dir, f"converted_{url_hash}.jpg")
+            filepath = str(self.temp_dir / f"main_{url_hash}")
+            output_path = str(self.temp_dir /  f"converted_{url_hash}.jpg")
             
             # 如果已经转换过，直接返回
             if os.path.exists(output_path):
@@ -210,19 +210,19 @@ class TouchGalAPI:
                         if result is None:
                             # 转换失败，清理可能已创建的文件
                             if os.path.exists(output_path):
-                                os.remove(output_path)
+                                await aiofiles.os.remove(output_path)
                         return result
                         
             except Exception as e:
                 logger.warning(f"图片处理失败: {str(e)} - {url}")
                 if os.path.exists(output_path):
-                    os.remove(output_path)
+                    await aiofiles.os.remove(output_path)
                 return None
             finally:
                 # 清理原始文件
                 if os.path.exists(filepath):
                     try:
-                        os.remove(filepath)
+                        await aiofiles.os.remove(filepath)
                     except Exception as e:
                         logger.warning(f"删除原始图片失败: {str(e)}")
     
@@ -238,7 +238,7 @@ class TouchGalAPI:
                     
                     # 调整图片大小（避免过大）
                     max_size = (800, 800)
-                    img.thumbnail(max_size, Image.LANCZOS)
+                    img.thumbnail(max_size, Image.BILINEAR)
                     
                     # 保存为JPG
                     img.save(output_path, "JPEG", quality=85)
@@ -271,85 +271,93 @@ class AsyncGameCache:
         self._access_times: Dict[int, float] = {}
         self._max_size = max_size
         self._ttl = ttl
-        self._cache_order = []
+        self._cache_order = []  # 按访问时间排序的缓存ID列表
+        self._lock = asyncio.Lock()  # 添加异步锁
         
     async def add(self, game_id: int, game_info: Dict):
         """添加游戏到缓存"""
-        current_time = time.time()
-        
-        # 如果缓存已满，移除最旧的项目
-        if len(self._cache) >= self._max_size and self._cache_order:
-            oldest_id = self._cache_order.pop(0)
-            if oldest_id in self._cache:
-                del self._cache[oldest_id]
-            if oldest_id in self._expiry_times:
-                del self._expiry_times[oldest_id]
-            if oldest_id in self._access_times:
-                del self._access_times[oldest_id]
-        
-        # 添加新项目
-        self._cache[game_id] = game_info
-        self._expiry_times[game_id] = current_time + self._ttl
-        self._access_times[game_id] = current_time
-        # 确保ID在缓存顺序列表中（如果已存在则先移除）
-        if game_id in self._cache_order:
-            self._cache_order.remove(game_id)
-        self._cache_order.append(game_id)
-        
-        # 确保缓存顺序列表不会过大
-        if len(self._cache_order) > self._max_size * 2:
-            self._cache_order = [id for id in self._cache_order if id in self._cache]
-    
-    async def get(self, game_id: int) -> Optional[Dict]:
-        """从缓存获取游戏信息"""
-        current_time = time.time()
-        
-        # 检查缓存是否过期
-        if game_id in self._expiry_times and current_time > self._expiry_times[game_id]:
-            # 如果过期，移除缓存项
-            if game_id in self._cache:
-                del self._cache[game_id]
-            if game_id in self._expiry_times:
-                del self._expiry_times[game_id]
-            if game_id in self._access_times:
-                del self._access_times[game_id]
-            # 同时从缓存顺序列表中移除
-            if game_id in self._cache_order:
-                self._cache_order.remove(game_id)
-            return None
-        
-        # 更新访问时间
-        if game_id in self._cache:
+        async with self._lock:  # 使用异步锁保护关键操作
+            current_time = time.time()
+            
+            # 如果缓存已满，移除最旧的项目
+            if len(self._cache) >= self._max_size and self._cache_order:
+                oldest_id = self._cache_order.pop(0)
+                if oldest_id in self._cache:
+                    del self._cache[oldest_id]
+                if oldest_id in self._expiry_times:
+                    del self._expiry_times[oldest_id]
+                if oldest_id in self._access_times:
+                    del self._access_times[oldest_id]
+            
+            # 添加新项目
+            self._cache[game_id] = game_info
+            self._expiry_times[game_id] = current_time + self._ttl
             self._access_times[game_id] = current_time
-            # 更新缓存顺序：移动到列表末尾表示最近访问
+            
+            # 确保ID在缓存顺序列表中（如果已存在则先移除）
             if game_id in self._cache_order:
                 self._cache_order.remove(game_id)
             self._cache_order.append(game_id)
-            return self._cache[game_id]
-        
-        return None
+            
+            # 确保缓存顺序列表不会过大
+            if len(self._cache_order) > self._max_size * 2:
+                self._cache_order = [id for id in self._cache_order if id in self._cache]
+    
+    async def get(self, game_id: int) -> Optional[Dict]:
+        """从缓存获取游戏信息"""
+        async with self._lock:  # 使用异步锁保护关键操作
+            current_time = time.time()
+            
+            # 检查缓存是否过期
+            if game_id in self._expiry_times and current_time > self._expiry_times[game_id]:
+                # 如果过期，移除缓存项
+                if game_id in self._cache:
+                    del self._cache[game_id]
+                if game_id in self._expiry_times:
+                    del self._expiry_times[game_id]
+                if game_id in self._access_times:
+                    del self._access_times[game_id]
+                # 同时从缓存顺序列表中移除
+                if game_id in self._cache_order:
+                    self._cache_order.remove(game_id)
+                return None
+            
+            # 更新访问时间
+            if game_id in self._cache:
+                self._access_times[game_id] = current_time
+                # 更新缓存顺序：移动到列表末尾表示最近访问
+                if game_id in self._cache_order:
+                    self._cache_order.remove(game_id)
+                self._cache_order.append(game_id)
+                return self._cache[game_id]
+            
+            return None
     
     async def cleanup(self):
         """清理过期缓存"""
-        current_time = time.time()
-        expired_ids = []
+        async with self._lock:  # 使用异步锁保护关键操作
+            current_time = time.time()
+            expired_ids = []
+            
+            # 收集所有过期ID
+            for game_id, expiry_time in self._expiry_times.items():
+                if current_time > expiry_time:
+                    expired_ids.append(game_id)
+            
+            # 清理每个过期ID
+            for game_id in expired_ids:
+                if game_id in self._cache:
+                    del self._cache[game_id]
+                if game_id in self._expiry_times:
+                    del self._expiry_times[game_id]
+                if game_id in self._access_times:
+                    del self._access_times[game_id]
+                # 确保从缓存顺序列表中移除
+                if game_id in self._cache_order:
+                    self._cache_order.remove(game_id)
         
-        for game_id, expiry_time in self._expiry_times.items():
-            if current_time > expiry_time:
-                expired_ids.append(game_id)
-        
-        for game_id in expired_ids:
-            if game_id in self._cache:
-                del self._cache[game_id]
-            if game_id in self._expiry_times:
-                del self._expiry_times[game_id]
-            if game_id in self._access_times:
-                del self._access_times[game_id]
-            if game_id in self._cache_order:
-                self._cache_order.remove(game_id)
-        
-        # 清理缓存顺序列表
-        self._cache_order = [id for id in self._cache_order if id in self._cache]
+            # 清理缓存顺序列表
+            self._cache_order = [id for id in self._cache_order if id in self._cache]
 
 @register(
     "astrbot_plugin_touchgal",
@@ -363,7 +371,7 @@ class TouchGalPlugin(Star):
         super().__init__(context)
         self.config = config
         self.search_limit = self.config.get("search_limit", 15)
-        # 使用无锁的异步缓存管理
+        # 使用异步缓存管理
         self.game_cache = AsyncGameCache(max_size=1000, ttl=86400)
 
         self.api = TouchGalAPI()
@@ -389,84 +397,140 @@ class TouchGalPlugin(Star):
         logger.info("已启动每日00:00自动清理图片缓存任务")
 
     async def periodic_cache_cleanup(self):
-        """定期清理缓存（每10分钟一次）"""
+        """定期清理缓存（每60分钟一次）"""
         try:
             while True:
                 await self.game_cache.cleanup()
                 logger.debug("缓存清理完成")
-                await asyncio.sleep(600)  # 10分钟
+                await asyncio.sleep(3600)  # 60分钟
         except asyncio.CancelledError:
             logger.info("定期缓存清理任务已被取消")
             raise
 
-    async def cleanup_old_cache(self):
-        """完全异步的缓存清理方法"""
+    async def cleanup_old_cache(self , max_age_days: int = 30, batch_size: int = 100):
+        """异步清理过期缓存文件（流式处理）"""
+        cache_dir = str(self.temp_dir)
+        logger.info(f"开始异步清理缓存目录: {cache_dir}")
+        
+        # 计算过期时间阈值
+        max_age_seconds = max_age_days * 24 * 60 * 60
+        current_time = time.time()
+        
+        # 使用异步迭代器
+        deleted_count = 0
+        batch_count = 0
+        
         try:
-            # 使用高效异步遍历方式
-            file_paths = []
-            async for file_path in self._efficient_async_walk(self.temp_dir):
-                if self._should_clean_file(file_path):
-                    file_paths.append(file_path)
+            # 使用异步目录遍历
+            async for file_path in self._async_walk(cache_dir):
+                try:
+                    # 异步获取文件状态
+                    stat = await aiofiles.os.stat(file_path)
+                    
+                    # 检查是否过期
+                    if current_time - stat.st_mtime > max_age_seconds:
+                        # 异步删除文件
+                        await aiofiles.os.remove(file_path)
+                        deleted_count += 1
+                        batch_count += 1
+                        
+                        # 批量处理日志
+                        if batch_count >= batch_size:
+                            logger.debug(f"已删除 {batch_count} 个过期缓存文件")
+                            batch_count = 0
+                            # 短暂释放事件循环
+                            await asyncio.sleep(0)
+                
+                except FileNotFoundError:
+                    # 文件可能已被其他进程删除
+                    pass
+                except Exception as e:
+                    logger.warning(f"处理文件失败: {file_path}, 原因: {e}")
             
-            # 批量处理文件
-            batch_size = 100
-            for i in range(0, len(file_paths), batch_size):
-                batch = file_paths[i:i+batch_size]
-                await self._process_file_batch(batch)
-                await asyncio.sleep(0.1)  # 短暂暂停
-                
+            # 记录最后一批删除
+            if batch_count > 0:
+                logger.debug(f"已删除 {batch_count} 个过期缓存文件")
+        
         except Exception as e:
-            logger.error(f"清理缓存失败: {str(e)}")
-
-    async def _efficient_async_walk(self, directory: str):
-        """高效异步目录遍历"""
-        # 使用aiofiles进行异步文件遍历
-        async for root, _, files in self._async_os_walk(directory):
-            for file in files:
-                yield os.path.join(root, file)
-    
-    async def _async_os_walk(self, directory: str):
-        """异步执行os.walk"""
-        loop = asyncio.get_running_loop()
-        walk_generator = await loop.run_in_executor(None, os.walk, directory)
+            logger.error(f"异步清理缓存失败: {e}")
         
-        # 每次迭代少量结果
-        batch = []
-        for root, dirs, files in walk_generator:
-            batch.append((root, dirs, files))
-            if len(batch) >= 10:  # 每10个目录处理一次
-                for item in batch:
-                    yield item
-                batch = []
-                await asyncio.sleep(0.01)  # 短暂暂停
+        # 异步清理空目录
+        await self._async_remove_empty_dirs(cache_dir)
         
-        # 处理剩余项
-        for item in batch:
-            yield item
+        logger.info(f"缓存清理完成，共删除 {deleted_count} 个过期文件")
+        return deleted_count
 
-    def _should_clean_file(self, file_path: str) -> bool:
-        """检查文件是否符合清理条件"""
-        filename = os.path.basename(file_path)
-        return filename.startswith("converted_") or filename.startswith("main_")
-
-    async def _process_file_batch(self, file_paths: List[str]):
-        """批量处理文件"""
-        for file_path in file_paths:
-            try:
-                # 获取文件修改时间
-                stat = await asyncio.to_thread(os.stat, file_path)
-                file_mtime = stat.st_mtime
-                current_time = time.time()
+    async def _async_walk(self, directory: str):
+        """异步生成目录中的所有文件路径"""
+        # 使用递归异步遍历
+        try:
+            # 获取目录内容
+            entries = await aiofiles.os.listdir(directory)
+            for entry in entries:
+                full_path = os.path.join(directory, entry)
                 
-                # 清理超过一天的文件
-                if current_time - file_mtime > 86400:
-                    await asyncio.to_thread(os.remove, file_path)
-                    logger.info(f"清理旧缓存: {os.path.basename(file_path)}")
-            except Exception as e:
-                logger.warning(f"处理文件失败: {file_path} - {str(e)}")
+                # 检查文件状态
+                stat = await aiofiles.os.stat(full_path)
+                
+                if stat.st_mode & 0o40000:  # 目录
+                    # 递归遍历子目录
+                    async for sub_path in self._async_walk(full_path):
+                        yield sub_path
+                else:  # 文件
+                    yield full_path
+        except Exception as e:
+            logger.warning(f"遍历目录失败: {directory}, 原因: {e}")
+
+    async def _async_remove_empty_dirs(self, cache_dir: str):
+        """异步递归删除空目录"""
+        try:
+            # 使用堆栈实现非递归遍历
+            dirs_to_check = [cache_dir]
+            empty_dirs = []
+            
+            while dirs_to_check:
+                current_dir = dirs_to_check.pop()
+                
+                try:
+                    # 获取目录内容
+                    entries = await aiofiles.os.listdir(current_dir)
+                    has_content = False
+                    
+                    for entry in entries:
+                        full_path = os.path.join(current_dir, entry)
+                        
+                        # 检查文件状态
+                        stat = await aiofiles.os.stat(full_path)
+                        
+                        if stat.st_mode & 0o40000:  # 目录
+                            # 添加到待检查列表
+                            dirs_to_check.append(full_path)
+                            has_content = True
+                        else:  # 文件
+                            has_content = True
+                    
+                    # 如果没有内容，标记为空目录
+                    if not has_content:
+                        empty_dirs.append(current_dir)
+                
+                except FileNotFoundError:
+                    # 目录可能已被删除
+                    pass
+            
+            # 自底向上删除空目录
+            for dir_path in reversed(empty_dirs):
+                try:
+                    await aiofiles.os.rmdir(dir_path)
+                    logger.debug(f"已删除空目录: {dir_path}")
+                except OSError as e:
+                    # 目录可能已被其他进程删除或非空
+                    logger.debug(f"无法删除目录: {dir_path}, 原因: {e}")
+        
+        except Exception as e:
+            logger.error(f"异步清理空目录失败: {e}")
     
     def _format_game_info(self, game_info: Dict[str, Any]) -> str:
-        """格式化游戏信息"""
+        """格式化游戏信息（未使用）"""
         # 处理标签
         tags = ", ".join(game_info.get("tags", []))
         if len(tags) > 100:  # 防止标签过长
@@ -500,15 +564,19 @@ class TouchGalPlugin(Star):
             else:
                 platform = "🕹️ 其他"
                 
-            # 添加资源信息
-            result.append(
-                f"{i}. {platform}版: {resource['name']}\n"
-                f"   📦 大小: {resource['size']}\n"
-                f"   🔗 下载地址: {resource['content']}\n"
-                f"      语言: {', '.join(resource['language'])}\n"
-                f"   📝 备注: {resource['note'] or '无'}\n"
-            )
-        return "\n".join(result)
+            # 构建资源信息的多行字符串
+            resource_info = [
+                f"{i}. {platform}版: {resource['name']}",
+                f"   📦 大小: {resource['size']}",
+                f"   🔗 下载地址: {resource['content']}",
+                f"      语言: {', '.join(resource['language'])}",
+                f"   📝 备注: {resource['note'] or '无'}"
+            ]
+            # 将资源信息列表中的字符串用换行连接
+            result.append("\n".join(resource_info))
+        
+        # 每个资源信息之间用换行分隔
+        return "\n\n".join(result)
 
     @filter.command("查询gal")
     async def search_galgame(self, event: AstrMessageEvent):
@@ -545,17 +613,17 @@ class TouchGalPlugin(Star):
             chain = []
             
             # 添加搜索结果标题
-            response_lines = [f"🔍 找到 {len(results)} 个相关游戏:\n.."]
+            response_lines = [f"🔍 找到 {len(results)} 个相关游戏:\n‎"]
             chain.append(Plain(response_lines[0]))
             # 为每个游戏添加图片和信息
             for i, (game, cover_path) in enumerate(zip(results, cover_paths), 1):
                 # 添加游戏信息
-                game_info = (
-                    f"{i}. 🆔 {game['id']}: {game['name']} "
-                    f"(平台: {', '.join(game['platform'])})\n"
-                    f"(语言: {', '.join(game['language'])})\n"
-                )
-                chain.append(Plain(game_info))
+                game_info = [
+                    f"{i}. 🆔 {game['id']}: {game['name']}",
+                    f"(平台: {', '.join(game['platform'])})",
+                    f"(语言: {', '.join(game['language'])})"
+                ]
+                chain.append(Plain("\n".join(game_info)))
                 # 添加封面图片（如果有）
                 if i-1 < len(cover_paths) and cover_paths[i-1] and os.path.exists(cover_paths[i-1]):
                     chain.append(CompImage.fromFileSystem(cover_paths[i-1]))
@@ -635,7 +703,16 @@ class TouchGalPlugin(Star):
             chain.append(Plain("\n".join(result)))
             
             # 发送消息
-            yield event.chain_result(chain)
+            if len(downloads) > 5:
+                node = Node(
+                    uin=3974507586,
+                    name="玖玖瑠",
+                    content=chain
+                )
+                yield event.chain_result([node])
+            else:
+                # 发送消息
+                yield event.chain_result(chain)
             
         except ValueError as e:
             yield event.plain_result(f"⚠️ {str(e)}")
