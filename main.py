@@ -5,6 +5,7 @@ import json
 import os
 import asyncio
 import time
+import stat as os_stat
 from datetime import datetime, timedelta
 import hashlib
 from typing import Dict, List, Union, Any, Tuple, Optional
@@ -188,7 +189,7 @@ class TouchGalAPI:
             output_path = str(self.temp_dir /  f"converted_{url_hash}.jpg")
             
             # 如果已经转换过，直接返回
-            if os.path.exists(output_path):
+            if await async_exists(output_path):
                 return output_path
             
             try:
@@ -209,18 +210,18 @@ class TouchGalAPI:
                         result = await self._convert_image(filepath, output_path)
                         if result is None:
                             # 转换失败，清理可能已创建的文件
-                            if os.path.exists(output_path):
+                            if await async_exists(output_path):
                                 await aiofiles.os.remove(output_path)
                         return result
                         
             except Exception as e:
                 logger.warning(f"图片处理失败: {str(e)} - {url}")
-                if os.path.exists(output_path):
+                if await async_exists(output_path):
                     await aiofiles.os.remove(output_path)
                 return None
             finally:
                 # 清理原始文件
-                if os.path.exists(filepath):
+                if await async_exists(filepath):
                     try:
                         await aiofiles.os.remove(filepath)
                     except Exception as e:
@@ -257,10 +258,6 @@ class TouchGalAPI:
         except Exception as e:
             logger.warning(f"图片转换失败: {str(e)}")
             return None
-        finally:
-            # 确保关闭图像对象以释放内存
-            if 'img' in locals() and img is not None:
-                img.close()
 
 # 高效缓存管理类
 class AsyncGameCache:
@@ -468,9 +465,9 @@ class TouchGalPlugin(Star):
                 full_path = os.path.join(directory, entry)
                 
                 # 检查文件状态
-                stat = await aiofiles.os.stat(full_path)
+                stat_info = await aiofiles.os.stat(full_path)
                 
-                if stat.st_mode & 0o40000:  # 目录
+                if os_stat.S_ISDIR(stat_info.st_mode):  # 目录
                     # 递归遍历子目录
                     async for sub_path in self._async_walk(full_path):
                         yield sub_path
@@ -575,7 +572,7 @@ class TouchGalPlugin(Star):
                 ]
                 chain.append(Plain("\n".join(game_info)))
                 # 添加封面图片（如果有）
-                if i-1 < len(cover_paths) and cover_paths[i-1] and os.path.exists(cover_paths[i-1]):
+                if i-1 < len(cover_paths) and cover_paths[i-1] and await async_exists(cover_paths[i-1]):
                     chain.append(CompImage.fromFileSystem(cover_paths[i-1]))
                 
             
@@ -646,7 +643,7 @@ class TouchGalPlugin(Star):
             chain = []
             
             # 添加封面图片（如果有）
-            if cover_image_path and os.path.exists(cover_image_path):
+            if cover_image_path and await async_exists(cover_image_path):
                 chain.append(CompImage.fromFileSystem(cover_image_path))
             
             # 添加文本内容
@@ -687,3 +684,11 @@ class TouchGalPlugin(Star):
                 pass
         await self.cleanup_old_cache()
         logger.info("TouchGal插件已终止，用户缓存已清空")
+
+async def async_exists(path):
+    """异步检查文件是否存在"""
+    try:
+        await aiofiles.os.stat(path)
+        return True
+    except FileNotFoundError:
+        return False
