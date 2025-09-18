@@ -407,7 +407,7 @@ class TouchGalPlugin(Star):
             logger.info("定期缓存清理任务已被取消")
             raise
 
-    async def cleanup_old_cache(self , max_age_days: int = 30, batch_size: int = 100):
+    async def cleanup_old_cache(self , max_age_days: int = 1, batch_size: int = 100):
         """异步清理过期缓存文件（流式处理）"""
         cache_dir = str(self.temp_dir)
         logger.info(f"开始异步清理缓存目录: {cache_dir}")
