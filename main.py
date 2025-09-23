@@ -79,7 +79,7 @@ class TouchGalAPI:
         self.temp_dir = StarTools.get_data_dir("astrbot_plugin_touchgal") / "tmp"
         self.semaphore = asyncio.Semaphore(10)  # 添加信号量限制并发API请求
         
-    async def search_game(self, keyword: str, limit: int = 15) -> List[Dict[str, Any]]:
+    async def search_game(self, keyword: str, limit: int, nsfw: bool) -> List[Dict[str, Any]]:
         """搜索游戏信息"""
         async with self.semaphore:
             headers = {"Content-Type": "application/json"}
@@ -104,13 +104,20 @@ class TouchGalAPI:
                 "selectedYears": ["all"],  # 添加缺失的必需字段
                 "selectedMonths": ["all"]  # 添加缺失的必需字段
             }
-            
+            cookies = {
+                "kun-patch-setting-store|state|data|kunNsfwEnable": "sfw"
+            }
+            if nsfw:
+                cookies = {
+                    "kun-patch-setting-store|state|data|kunNsfwEnable": "all"
+                }
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         self.search_url, 
                         json=payload, 
                         headers=headers,
+                        cookies=cookies,
                         timeout=aiohttp.ClientTimeout(total=15)
                     ) as response:
                         # 确保响应状态为200
@@ -368,6 +375,7 @@ class TouchGalPlugin(Star):
         super().__init__(context)
         self.config = config
         self.search_limit = self.config.get("search_limit", 15)
+        self.enable_nsfw = self.config.get("enable_nsfw", False)
         # 使用异步缓存管理
         self.game_cache = AsyncGameCache(max_size=1000, ttl=86400)
 
@@ -540,7 +548,7 @@ class TouchGalPlugin(Star):
               
         try:
             yield event.plain_result(f"🔍 正在搜索: {keyword}")
-            results = await self.api.search_game(keyword, self.search_limit)            
+            results = await self.api.search_game(keyword, self.search_limit,self.enable_nsfw)            
             
             # 并发下载所有封面图片
             cover_tasks = []
