@@ -25,7 +25,9 @@
 
 
 
+## 更新日志  
 
+```V1.1``` 增加开启nsfw配置项
 
 # 支持
 
@@ -33,4 +35,3 @@
 
 [TouchGal](https://www.touchgal.us/)
 
-[astrbot_plugin_galinfo](https://github.com/Hxfrzc/astrbot_plugin_galinfo)
