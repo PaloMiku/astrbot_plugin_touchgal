@@ -2,9 +2,12 @@ import aiohttp
 import aiofiles
 import aiofiles.os
 import json
+import re
 import os
 import asyncio
 import time
+from datetime import datetime, timezone
+from dateutil import parser, tz
 import stat as os_stat
 from datetime import datetime, timedelta
 import hashlib
@@ -367,7 +370,7 @@ class AsyncGameCache:
     "astrbot_plugin_touchgal",
     "CCYellowStar2",
     "基于TouchGal API的Galgame信息查询与下载插件",
-    "1.1",
+    "1.2",
     "https://github.com/CCYellowStar2/astrbot_plugin_touchgal"
 )
 class TouchGalPlugin(Star):
@@ -507,6 +510,45 @@ class TouchGalPlugin(Star):
             f"🔍 使用 '/下载gal {game_info['id']}' 获取下载地址"
         )
 
+    def _relative_time(self, date_str: str) -> str:
+        """将时间字符串转换为上海时间相对描述"""
+
+            # 预处理字符串 - 移除时区名称部分
+        cleaned_str = re.sub(r'\([^)]*\)', '', date_str).strip()
+        
+        
+        # 解析时间字符串并转换为上海时间
+        dt = parser.parse(cleaned_str)
+        
+        # 获取当前时间的时间戳
+        current_ts = time.time()
+        # 获取目标时间的时间戳
+        target_ts = time.mktime(dt.timetuple()) + dt.microsecond/1e6
+        
+        # 计算时间差（秒）
+        seconds = current_ts - target_ts
+        
+        # 转换为相对时间描述
+        if seconds < 60:
+            return "刚刚"
+        elif seconds < 3600:  # 1小时内
+            minutes = int(seconds // 60)
+            return f"{minutes}分钟前"
+        elif seconds < 86400:  # 24小时内
+            hours = int(seconds // 3600)
+            return f"{hours}小时前"
+        elif seconds < 2592000:  # 30天内
+            days = int(seconds // 86400)
+            return f"{days}天前"
+        elif seconds < 31536000:  # 365天内
+            months = int(seconds // 2592000)
+            return f"{months}个月前"
+        else:
+            years = int(seconds // 31536000)
+            return f"{years}年前"
+
+
+
     def _format_downloads(self, downloads: List[Dict[str, Any]]) -> str:
         """格式化下载资源信息"""
         result = []
@@ -519,6 +561,10 @@ class TouchGalPlugin(Star):
             else:
                 platform = "🕹️ 其他"
                 
+            # 获取发布时间并转换为相对时间
+            created_time = resource.get('created', '')
+            relative_time_str = self._relative_time(created_time) if created_time else "未知时间"
+            
             # 构建资源信息的多行字符串
             resource_info = [
                 f"{i}. {platform}版: {resource['name']}",
@@ -527,6 +573,7 @@ class TouchGalPlugin(Star):
                 f"      提取码: {resource['code'] or '无'}",
                 f"      解压码: {resource['password'] or '无'}",
                 f"      语言: {', '.join(resource['language'])}",
+                f"   🕒 发布时间: {relative_time_str}",  # 添加发布时间行
                 f"   📝 备注: {resource['note'] or '无'}"
             ]
             # 将资源信息列表中的字符串用换行连接
@@ -589,7 +636,7 @@ class TouchGalPlugin(Star):
             # 添加提示文本
             chain.append(Plain("\n📌 使用 '/下载gal <游戏ID>' 获取下载地址"))
             
-            if len(results) > 5:
+            if len(results) > 1:
                 node = Node(
                     uin=3974507586,
                     name="玖玖瑠",
@@ -660,7 +707,7 @@ class TouchGalPlugin(Star):
             chain.append(Plain("\n".join(result)))
             
             # 发送消息
-            if len(downloads) > 5:
+            if len(downloads) > 1:
                 node = Node(
                     uin=3974507586,
                     name="玖玖瑠",
