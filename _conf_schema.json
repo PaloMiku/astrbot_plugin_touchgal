@@ -22,7 +22,7 @@
     "custom_api_base": {
         "description": "自定义TouchGal API基础URL",
         "hint": "留空使用默认API地址，可自定义为其他兼容的API服务器",
-        "type": "str",
+        "type": "string",
         "default": "",
         "optional": true
     }
