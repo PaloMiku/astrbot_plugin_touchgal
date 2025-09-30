@@ -12,6 +12,18 @@
         "hint": "开启后在发送包含nsfw的搜索结果",
         "type": "bool",
         "default": false
-    } 
-
+    },
+    "enable_image_display": {
+        "description": "是否在搜索结果中显示游戏封面图片",
+        "hint": "开启后搜索结果会包含游戏封面图，关闭则使用纯文字展示",
+        "type": "bool",
+        "default": true
+    },
+    "custom_api_base": {
+        "description": "自定义TouchGal API基础URL",
+        "hint": "留空使用默认API地址，可自定义为其他兼容的API服务器",
+        "type": "str",
+        "default": "",
+        "optional": true
+    }
 }
